@@ -511,3 +511,40 @@ def calculate_upset_magnitude(team_a, team_b, winner):
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
+from flask import Flask, send_from_directory
+import random
+
+app = Flask(__name__)
+
+teams = ["Dublin", "Kerry", "Galway", "Mayo", "Cork", "Tyrone", "Donegal", "Armagh"]
+simulations = 10000
+
+@app.route('/')
+def index():
+    return send_from_directory('.', 'index.html')
+
+@app.route('/simulate')
+def simulate():
+    win_counts = {team: 0 for team in teams}
+    stats = {team: [] for team in teams}
+
+    for _ in range(simulations):
+        winner = random.choice(teams)
+        win_counts[winner] += 1
+        for team in teams:
+            stats[team].append(random.randint(0, 30))  # Example stat
+
+    winner = max(win_counts, key=win_counts.get)
+    output = [f"Simulated {simulations} All-Ireland GAA competitions:"]
+    output.append(f"Most likely winner: {winner}")
+    output.append("\nWin probabilities:")
+    for team in teams:
+        prob = win_counts[team] / simulations * 100
+        output.append(f"{team}: {prob:.2f}%")
+    output.append("\nSample stats (total points scored):")
+    for team in teams:
+        output.append(f"{team}: {sum(stats[team])} points in {simulations} sims")
+    return "\n".join(output)
+
+if __name__ == '__main__':
+    app.run(debug=True)
