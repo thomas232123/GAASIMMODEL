@@ -1,0 +1,242 @@
+
+import numpy as np
+from collections import Counter
+from flask import Flask, render_template, request, jsonify
+
+app = Flask(__name__)
+
+# Elo-style ratings (not ranks!)
+power_ratings = {
+    'Dublin': 1740,
+    'Kerry': 1777,
+    'Donegal': 1735,
+    'Galway': 1722,
+    'Armagh': 1649,
+    'Tyrone': 1625,
+    'Monaghan': 1605,
+    'Meath': 1596,
+    'Down': 1568,
+    'Cavan': 1580,
+    'Louth': 1574,
+    'Cork': 1564
+}
+
+prelim_matches = [
+    ('Dublin', 'Cork'),
+    ('Kerry', 'Cavan'),
+    ('Down', 'Galway'),
+    ('Donegal', 'Louth')
+]
+
+static_teams = ['Meath', 'Tyrone', 'Monaghan', 'Armagh']
+
+# Store simulation results globally
+stored_results = None
+stored_stats = None
+
+# Win probability function
+def win_prob(a, b):
+    diff = power_ratings[a] - power_ratings[b]
+    return 1 / (1 + 10**(-diff / 400))
+
+def simulate_score(team_a, team_b):
+    """Simulate a realistic GAA score for team_a vs team_b."""
+    base_goals = 1
+    base_points = 10
+
+    rating_a = power_ratings[team_a]
+    rating_b = power_ratings[team_b]
+    rating_diff = rating_a - rating_b
+
+    # Bias for goals and points based on rating difference
+    # Stronger team likely to score more goals/points
+    mean_goals_a = base_goals + max(0, rating_diff) / 200
+    mean_goals_b = base_goals + max(0, -rating_diff) / 200
+    mean_points_a = base_points + max(0, rating_diff) / 50
+    mean_points_b = base_points + max(0, -rating_diff) / 50
+
+    # Simulate goals and points using Poisson distribution for realism
+    goals_a = np.random.poisson(mean_goals_a)
+    goals_b = np.random.poisson(mean_goals_b)
+    points_a = np.random.poisson(mean_points_a)
+    points_b = np.random.poisson(mean_points_b)
+
+    # Calculate totals to decide winner
+    total_a = goals_a * 3 + points_a
+    total_b = goals_b * 3 + points_b
+
+    if total_a == total_b:
+        # Handle draw by adding a random extra point to a random team
+        if np.random.rand() < 0.5:
+            points_a += 1
+            total_a += 1
+        else:
+            points_b += 1
+            total_b += 1
+
+    winner = team_a if total_a > total_b else team_b
+
+    score_a = f"{goals_a}-{points_a}"
+    score_b = f"{goals_b}-{points_b}"
+
+    return winner, score_a, score_b
+
+# Simulate match outcome
+def simulate_match(a, b):
+    winner, score_a, score_b = simulate_score(a, b)
+    return winner, score_a, score_b
+
+# Run one simulation and return full path
+def simulate_one_full_path():
+    sim_path = {"Prelim": [], "QF": [], "SF": [], "Final": ""}
+
+    # For tracking teams per round
+    teams_in_prelim = set()
+    teams_in_qf = set()
+    teams_in_sf = set()
+    teams_in_final = set()
+
+    # Prelim QFs
+    prelim_winners = []
+    for a, b in prelim_matches:
+        teams_in_prelim.update([a, b])
+        w, score_a, score_b = simulate_match(a, b)
+        prelim_winners.append(w)
+        sim_path["Prelim"].append((a, b, w, score_a, score_b))
+
+    # Quarter-Finals
+    qf_pairs = [(static_teams[i], prelim_winners[i]) for i in range(4)]
+    qf_winners = []
+    for a, b in qf_pairs:
+        teams_in_qf.update([a, b])
+        w, score_a, score_b = simulate_match(a, b)
+        qf_winners.append(w)
+        sim_path["QF"].append((a, b, w, score_a, score_b))
+
+    # Semi-Finals
+    teams_in_sf.update(qf_winners)
+    sf1, sf1_score_a, sf1_score_b = simulate_match(qf_winners[0], qf_winners[1])
+    sf2, sf2_score_a, sf2_score_b = simulate_match(qf_winners[2], qf_winners[3])
+    sim_path["SF"].append((qf_winners[0], qf_winners[1], sf1, sf1_score_a, sf1_score_b))
+    sim_path["SF"].append((qf_winners[2], qf_winners[3], sf2, sf2_score_a, sf2_score_b))
+
+    # Final
+    teams_in_final.update([sf1, sf2])
+    champ, final_score_a, final_score_b = simulate_match(sf1, sf2)
+    sim_path["Final"] = (sf1, sf2, champ, final_score_a, final_score_b)
+
+    return champ, sim_path, teams_in_prelim, teams_in_qf, teams_in_sf, teams_in_final
+
+# Run all simulations and store paths
+def run_all_sims(n=10000):
+    results = []
+
+    # Counters to track round appearances
+    prelim_counts = Counter()
+    qf_counts = Counter()
+    sf_counts = Counter()
+    final_counts = Counter()
+    win_counts = Counter()
+
+    for _ in range(n):
+        champ, path, pre, qf, sf, final = simulate_one_full_path()
+        results.append((champ, path))
+        for t in pre:
+            prelim_counts[t] += 1
+        for t in qf:
+            qf_counts[t] += 1
+        for t in sf:
+            sf_counts[t] += 1
+        for t in final:
+            final_counts[t] += 1
+        win_counts[champ] += 1
+
+    return results, prelim_counts, qf_counts, sf_counts, final_counts, win_counts
+
+@app.route('/')
+def index():
+    global stored_results, stored_stats
+    
+    # Run simulations if not already done
+    if stored_results is None:
+        stored_results, prelim, qf, sf, final, wins = run_all_sims(10000)
+        stored_stats = {
+            'wins': wins,
+            'prelim': prelim,
+            'qf': qf,
+            'sf': sf,
+            'final': final
+        }
+    
+    # Prepare win percentages
+    win_percentages = []
+    for team, count in sorted(stored_stats['wins'].items(), key=lambda x: -x[1]):
+        win_percentages.append({
+            'team': team,
+            'percentage': round(count / 100, 2)
+        })
+    
+    return render_template('index.html', 
+                         win_percentages=win_percentages,
+                         teams=list(power_ratings.keys()))
+
+@app.route('/simulation/<int:sim_id>')
+def view_simulation(sim_id):
+    global stored_results
+    
+    if stored_results is None or sim_id < 1 or sim_id > len(stored_results):
+        return jsonify({'error': 'Invalid simulation ID'}), 400
+    
+    champ, path = stored_results[sim_id - 1]
+    return jsonify({
+        'simulation_id': sim_id,
+        'champion': champ,
+        'path': path
+    })
+
+@app.route('/team_wins/<team>')
+def team_wins(team):
+    global stored_results
+    
+    if stored_results is None:
+        return jsonify({'error': 'No simulations found'}), 400
+    
+    team_lower = team.lower()
+    matching_sims = []
+    
+    for i, (champ, _) in enumerate(stored_results):
+        if champ.lower() == team_lower:
+            matching_sims.append(i + 1)
+    
+    return jsonify({
+        'team': team,
+        'total_wins': len(matching_sims),
+        'simulation_ids': matching_sims[:100]  # Limit to first 100
+    })
+
+@app.route('/round_stats')
+def round_stats():
+    global stored_stats
+    
+    if stored_stats is None:
+        return jsonify({'error': 'No statistics found'}), 400
+    
+    def format_round_stats(counts, round_name):
+        stats = []
+        for team, count in sorted(counts.items(), key=lambda x: -x[1]):
+            stats.append({
+                'team': team,
+                'appearances': count,
+                'percentage': round(count / 100, 2)
+            })
+        return stats
+    
+    return jsonify({
+        'prelim': format_round_stats(stored_stats['prelim'], 'Preliminary'),
+        'qf': format_round_stats(stored_stats['qf'], 'Quarter-Finals'),
+        'sf': format_round_stats(stored_stats['sf'], 'Semi-Finals'),
+        'final': format_round_stats(stored_stats['final'], 'Finals')
+    })
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
