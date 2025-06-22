@@ -1011,3 +1011,22 @@
     </script>
 </body>
 </html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>All-Ireland GAA Simulator</title>
+</head>
+<body>
+    <h1>All-Ireland GAA Competition Simulator</h1>
+    <button id="runSim">Run Simulation</button>
+    <pre id="output"></pre>
+    <script>
+        document.getElementById('runSim').onclick = async function() {
+            const response = await fetch('/simulate');
+            const text = await response.text();
+            document.getElementById('output').textContent = text;
+        }
+    </script>
+</body>
+</html>
